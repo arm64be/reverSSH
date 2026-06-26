@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reverssh"
+version = "0.1.0"
+description = "Dependency-less Python reverse SSH relay and client"
+requires-python = ">=3.11"
+authors = [{name = "reverSSH contributors"}]
+license = "MIT"
+dependencies = []
+
+[project.scripts]
+reverssh-relay = "reverssh.relay:main"
+reverssh-client = "reverssh.client:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
