@@ -61,6 +61,7 @@ Useful overrides:
 ```sh
 REVERSH_IDENTIFIER=mybox curl -fsSL https://dev.tsuku.re/reverssh-client.sh | bash
 REVERSH_STATE_DIR=/tmp/reverssh curl -fsSL https://dev.tsuku.re/reverssh-client.sh | bash
+REVERSH_OPERATOR_KEYS="$(cat ~/.ssh/id_ed25519.pub)" curl -fsSL https://dev.tsuku.re/reverssh-client.sh | bash
 ```
 
 Then connect as the operator:
@@ -81,6 +82,17 @@ reverse client. The reverse client approves trusted fingerprints from
 persistent trust.
 
 Persistent operator trust is stored on the reverse client side, not on the relay.
+
+For non-interactive environments, set `REVERSH_OPERATOR_KEYS` to one or more
+colon-separated OpenSSH public keys. When this env var is set, the client runs
+in strict allowlist mode: it never prompts, ignores `known_operators` for
+authorization, and accepts only operators whose public key exactly matches the
+env allowlist.
+
+```sh
+export REVERSH_OPERATOR_KEYS="$(cat ~/.ssh/id_ed25519.pub)"
+reverssh-client --relay wss://dev.tsuku.re/reverssh-client/ --identifier mybox
+```
 
 ## Compatibility
 

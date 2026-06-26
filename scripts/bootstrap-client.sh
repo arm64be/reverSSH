@@ -59,6 +59,9 @@ mkdir -p "$base_dir" "$state_dir"
 
 echo "reverSSH setup: relay $relay_url" >&2
 echo "reverSSH setup: identifier $identifier" >&2
+if [ -n "${REVERSH_OPERATOR_KEYS:-}" ]; then
+    echo "reverSSH setup: strict non-interactive operator key allowlist enabled" >&2
+fi
 echo "reverSSH setup: installing source under $src_dir" >&2
 
 "$python_bin" - "$source_zip" "$download_path" "$src_dir" <<'PY'

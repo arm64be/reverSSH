@@ -39,12 +39,13 @@ from .private_protocol import (
     unpack_register_result,
 )
 from .sftp import SFTPServer
-from .ssh_encoding import Reader, uint32
+from .ssh_encoding import Reader, parse_authorized_key, uint32
 from .ssh_messages import EXTENDED_DATA_STDERR
 from .websocket import connect_websocket
 
 LOG = logging.getLogger("reverssh.client")
 CHANNEL_MAX_PACKET = 32768
+OPERATOR_KEYS_ENV = "REVERSH_OPERATOR_KEYS"
 
 
 class KnownOperators:
@@ -75,12 +76,79 @@ class KnownOperators:
             self.path.chmod(0o600)
 
 
+class OperatorApproval:
+    def __init__(self, known: KnownOperators, allowed_key_blobs: set[bytes] | None = None):
+        self.known = known
+        self.allowed_key_blobs = allowed_key_blobs
+
+    @classmethod
+    def from_env(cls, known: KnownOperators, env_value: str | None = None) -> "OperatorApproval":
+        if env_value is None:
+            env_value = os.environ.get(OPERATOR_KEYS_ENV)
+        if env_value is None:
+            return cls(known)
+        allowed: set[bytes] = set()
+        errors: list[str] = []
+        for index, item in enumerate(env_value.split(":"), start=1):
+            line = item.strip()
+            if not line:
+                continue
+            try:
+                alg, blob = parse_authorized_key(line)
+            except Exception as exc:
+                errors.append(f"entry {index}: {exc}")
+                continue
+            if alg != "ssh-ed25519":
+                errors.append(f"entry {index}: unsupported key algorithm {alg!r}; relay accepts ssh-ed25519")
+                continue
+            allowed.add(blob)
+        if errors:
+            raise ValueError(f"invalid {OPERATOR_KEYS_ENV}: " + "; ".join(errors))
+        if not allowed:
+            raise ValueError(f"{OPERATOR_KEYS_ENV} is set but contains no public keys")
+        return cls(known, allowed)
+
+    @property
+    def strict(self) -> bool:
+        return self.allowed_key_blobs is not None
+
+    def approve(self, username: str, fingerprint: str, key_blob: bytes) -> tuple[bool, bool]:
+        if self.allowed_key_blobs is not None:
+            if key_blob in self.allowed_key_blobs:
+                LOG.info("env-allowed operator %s approved for %s", fingerprint, username)
+                return True, False
+            LOG.warning("rejecting operator %s for %s; not present in %s", fingerprint, username, OPERATOR_KEYS_ENV)
+            return False, False
+        if self.known.contains(fingerprint):
+            LOG.info("trusted operator %s approved for %s", fingerprint, username)
+            return True, False
+        if not sys.stdin.isatty():
+            LOG.warning("rejecting unknown operator %s for %s; stdin is not interactive", fingerprint, username)
+            return False, False
+        print("", file=sys.stderr)
+        print(f"reverSSH operator request for identifier '{username}'", file=sys.stderr)
+        print(f"Operator key fingerprint: {fingerprint}", file=sys.stderr)
+        while True:
+            answer = input("Approve? [o]nce, [t]rust, [r]eject: ").strip().lower()
+            if answer in ("o", "once", "y", "yes"):
+                return True, False
+            if answer in ("t", "trust"):
+                return True, True
+            if answer in ("r", "reject", "n", "no", ""):
+                return False, False
+
+    def persist(self, fingerprint: str) -> None:
+        if self.strict:
+            return
+        self.known.add(fingerprint)
+
+
 class ReverseClientConnection:
-    def __init__(self, sock: socket.socket, identifier: str, shell: str, known: KnownOperators):
+    def __init__(self, sock: socket.socket, identifier: str, shell: str, approval: OperatorApproval):
         self.sock = sock
         self.identifier = identifier
         self.shell = shell
-        self.known = known
+        self.approval = approval
         self.frames = FrameSocket(sock)
         self.channels: dict[int, ClientChannelBase] = {}
         self.alive = True
@@ -102,10 +170,10 @@ class ReverseClientConnection:
             while self.alive:
                 frame_type, payload = self.frames.read_frame()
                 if frame_type == FrameType.AUTH_REQUEST:
-                    auth_id, username, fingerprint, _key_blob = unpack_auth_request(payload)
-                    ok, persist = self._approve_operator(username, fingerprint)
+                    auth_id, username, fingerprint, key_blob = unpack_auth_request(payload)
+                    ok, persist = self.approval.approve(username, fingerprint, key_blob)
                     if ok and persist:
-                        self.known.add(fingerprint)
+                        self.approval.persist(fingerprint)
                     self.frames.send_frame(FrameType.AUTH_RESPONSE, pack_auth_response(auth_id, ok, persist))
                 elif frame_type == FrameType.OPEN_CHANNEL:
                     self._handle_open_channel(payload)
@@ -178,26 +246,6 @@ class ReverseClientConnection:
                 channel.start_reader()
         else:
             self.frames.send_frame(FrameType.OPEN_CONFIRM, pack_open_confirm(channel_id, False, f"unsupported channel type {kind}"))
-
-    def _approve_operator(self, username: str, fingerprint: str) -> tuple[bool, bool]:
-        if self.known.contains(fingerprint):
-            LOG.info("trusted operator %s approved for %s", fingerprint, username)
-            return True, False
-        if not sys.stdin.isatty():
-            LOG.warning("rejecting unknown operator %s for %s; stdin is not interactive", fingerprint, username)
-            return False, False
-        print("", file=sys.stderr)
-        print(f"reverSSH operator request for identifier '{username}'", file=sys.stderr)
-        print(f"Operator key fingerprint: {fingerprint}", file=sys.stderr)
-        while True:
-            answer = input("Approve? [o]nce, [t]rust, [r]eject: ").strip().lower()
-            if answer in ("o", "once", "y", "yes"):
-                return True, False
-            if answer in ("t", "trust"):
-                return True, True
-            if answer in ("r", "reject", "n", "no", ""):
-                return False, False
-
 
 class ClientChannelBase:
     def __init__(self, conn: ReverseClientConnection, channel_id: int):
@@ -510,7 +558,7 @@ class ReverseClient:
         self.identifier = identifier
         self.state_dir = state_dir
         self.shell = shell
-        self.known = KnownOperators(known_operators)
+        self.approval = OperatorApproval.from_env(KnownOperators(known_operators))
 
     def run_forever(self) -> None:
         backoff = 1.0
@@ -524,7 +572,7 @@ class ReverseClient:
                     LOG.info("connecting to relay %s:%s", host, port)
                     sock = socket.create_connection((host, port), timeout=30)
                     sock.settimeout(None)
-                conn = ReverseClientConnection(sock, self.identifier, self.shell, self.known)
+                conn = ReverseClientConnection(sock, self.identifier, self.shell, self.approval)
                 if not conn.register():
                     return
                 backoff = 1.0
