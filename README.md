@@ -49,6 +49,20 @@ reverssh-client \
   --state-dir ~/.reverssh
 ```
 
+For throwaway environments with Python 3.11+, the hosted bootstrap script can
+download the client and run it in the foreground:
+
+```sh
+curl -fsSL https://dev.tsuku.re/reverssh-client.sh | bash
+```
+
+Useful overrides:
+
+```sh
+REVERSH_IDENTIFIER=mybox curl -fsSL https://dev.tsuku.re/reverssh-client.sh | bash
+REVERSH_STATE_DIR=/tmp/reverssh curl -fsSL https://dev.tsuku.re/reverssh-client.sh | bash
+```
+
 Then connect as the operator:
 
 ```sh
