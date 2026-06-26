@@ -41,6 +41,7 @@ from .private_protocol import (
 from .sftp import SFTPServer
 from .ssh_encoding import Reader, uint32
 from .ssh_messages import EXTENDED_DATA_STDERR
+from .websocket import connect_websocket
 
 LOG = logging.getLogger("reverssh.client")
 CHANNEL_MAX_PACKET = 32768
@@ -515,9 +516,13 @@ class ReverseClient:
         backoff = 1.0
         while True:
             try:
-                host, port = parse_host_port(self.relay)
-                LOG.info("connecting to relay %s:%s", host, port)
-                sock = socket.create_connection((host, port), timeout=30)
+                if "://" in self.relay:
+                    LOG.info("connecting to relay websocket %s", self.relay)
+                    sock = connect_websocket(self.relay, timeout=30)
+                else:
+                    host, port = parse_host_port(self.relay)
+                    LOG.info("connecting to relay %s:%s", host, port)
+                    sock = socket.create_connection((host, port), timeout=30)
                 conn = ReverseClientConnection(sock, self.identifier, self.shell, self.known)
                 if not conn.register():
                     return
@@ -533,7 +538,7 @@ class ReverseClient:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a reverSSH reverse client")
-    parser.add_argument("--relay", required=True, help="relay client-protocol address, for example host:8022")
+    parser.add_argument("--relay", required=True, help="relay client-protocol address, for example host:8022 or wss://dev.tsuku.re/reverssh-client/")
     parser.add_argument("--identifier", required=True, help="identifier operators use as ssh username")
     parser.add_argument("--state-dir", default=str(Path.home() / ".reverssh"), help="client state directory")
     parser.add_argument("--shell", default=os.environ.get("SHELL", "/bin/sh"), help="shell for session and exec channels")

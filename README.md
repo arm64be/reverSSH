@@ -39,6 +39,16 @@ reverssh-client \
   --state-dir ~/.reverssh
 ```
 
+If the relay exposes its reverse-client protocol through a WebSocket endpoint,
+use that URL instead:
+
+```sh
+reverssh-client \
+  --relay wss://dev.tsuku.re/reverssh-client/ \
+  --identifier laptop \
+  --state-dir ~/.reverssh
+```
+
 Then connect as the operator:
 
 ```sh

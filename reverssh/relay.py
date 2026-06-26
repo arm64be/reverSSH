@@ -35,6 +35,7 @@ from .private_protocol import (
 from .ssh_encoding import Reader, boolean, byte, mpint, name_list, public_key_fingerprint, string, uint32
 from .ssh_messages import *
 from .ssh_packet import OpenSSHChaCha20Poly1305, PacketStream, SSHProtocolError
+from .websocket import accept_websocket
 
 LOG = logging.getLogger("reverssh.relay")
 
@@ -947,10 +948,12 @@ class SSHConnection:
 
 
 class RelayServer:
-    def __init__(self, ssh_listen: str, client_listen: str, state_dir: Path):
+    def __init__(self, ssh_listen: str, client_listen: str, state_dir: Path, ws_listen: str | None = None, ws_path: str = "/reverssh-client/"):
         self.ssh_listen = ssh_listen
         self.client_listen = client_listen
         self.state_dir = state_dir
+        self.ws_listen = ws_listen
+        self.ws_path = ws_path
         self.registry = ClientRegistry()
         self.host_seed = load_or_create_host_seed(state_dir)
 
@@ -960,6 +963,10 @@ class RelayServer:
         LOG.info("relay SSH listening on %s", ssh_sock.getsockname())
         LOG.info("relay client protocol listening on %s", client_sock.getsockname())
         threading.Thread(target=self._accept_reverse_clients, args=(client_sock,), daemon=True).start()
+        if self.ws_listen:
+            ws_sock = listen_socket(self.ws_listen)
+            LOG.info("relay websocket client protocol listening on %s path %s", ws_sock.getsockname(), self.ws_path)
+            threading.Thread(target=self._accept_ws_reverse_clients, args=(ws_sock,), daemon=True).start()
         while True:
             conn, addr = ssh_sock.accept()
             thread = threading.Thread(target=self._handle_ssh, args=(conn, addr), daemon=True)
@@ -969,6 +976,23 @@ class RelayServer:
         while True:
             conn, addr = listen_sock.accept()
             threading.Thread(target=self._handle_reverse_client, args=(conn, addr), daemon=True).start()
+
+    def _accept_ws_reverse_clients(self, listen_sock: socket.socket) -> None:
+        while True:
+            conn, addr = listen_sock.accept()
+            threading.Thread(target=self._handle_ws_reverse_client, args=(conn, addr), daemon=True).start()
+
+    def _handle_ws_reverse_client(self, conn: socket.socket, addr: tuple) -> None:
+        try:
+            ws = accept_websocket(conn, self.ws_path)
+        except Exception as exc:
+            LOG.info("websocket reverse client upgrade failed from %s: %s", addr, exc)
+            try:
+                conn.close()
+            except OSError:
+                pass
+            return
+        self._handle_reverse_client(ws, addr)
 
     def _handle_reverse_client(self, conn: socket.socket, addr: tuple) -> None:
         frames = FrameSocket(conn)
@@ -1007,12 +1031,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a reverSSH relay")
     parser.add_argument("--ssh-listen", default="0.0.0.0:2222", help="OpenSSH listen address")
     parser.add_argument("--client-listen", default="0.0.0.0:8022", help="reverse client listen address")
+    parser.add_argument("--ws-listen", default=None, help="optional WebSocket reverse-client listen address")
+    parser.add_argument("--ws-path", default="/reverssh-client/", help="WebSocket path prefix for reverse clients")
     parser.add_argument("--state-dir", default="./state", help="relay state directory")
     parser.add_argument("--log-level", default="INFO", help="Python logging level")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    RelayServer(args.ssh_listen, args.client_listen, Path(args.state_dir)).serve_forever()
+    RelayServer(args.ssh_listen, args.client_listen, Path(args.state_dir), args.ws_listen, args.ws_path).serve_forever()
     return 0
 
 
