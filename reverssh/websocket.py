@@ -140,6 +140,7 @@ def connect_websocket(url: str, timeout: float = 30.0) -> WebSocketStream:
     expected = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
     if headers.get("sec-websocket-accept", "") != expected:
         raise WebSocketError("websocket upgrade returned invalid accept key")
+    raw.settimeout(None)
     return WebSocketStream(raw, mask_outgoing=True)
 
 

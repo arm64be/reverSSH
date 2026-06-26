@@ -523,6 +523,7 @@ class ReverseClient:
                     host, port = parse_host_port(self.relay)
                     LOG.info("connecting to relay %s:%s", host, port)
                     sock = socket.create_connection((host, port), timeout=30)
+                    sock.settimeout(None)
                 conn = ReverseClientConnection(sock, self.identifier, self.shell, self.known)
                 if not conn.register():
                     return
